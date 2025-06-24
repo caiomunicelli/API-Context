@@ -69,7 +69,13 @@ def create_redis_index(redis_client, index_name, dimension):
     except:
         schema = [
             TextField("content"),
-            VectorField("embedding", "FLAT", {"TYPE": "FLOAT32", "DIM": dimension, "DISTANCE_METRIC": "COSINE"})
+            VectorField("embedding", "HNSW", {
+                "TYPE": "FLOAT32",
+                "DIM": dimension,
+                "DISTANCE_METRIC": "COSINE",
+                "M": 16,                  # grau de conectividade
+                "EF_CONSTRUCTION": 200   # precisão/construção
+            })
         ]
         definition = IndexDefinition(prefix=["doc:"], index_type=IndexType.HASH)
         redis_client.ft(index_name).create_index(schema, definition=definition)
