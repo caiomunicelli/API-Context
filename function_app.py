@@ -162,9 +162,6 @@ async def main(req: func.HttpRequest) -> func.HttpResponse:
         else:
             return func.HttpResponse(f"Unsupported file type: {file_extension}", status_code=400)
 
-        print("Conteudo do Arquivo:\n")
-        print(content)
-
         # 1) faz a segmentação semântica com TextTiling
         segments = texttiling_split(content)
 
@@ -181,10 +178,7 @@ async def main(req: func.HttpRequest) -> func.HttpResponse:
                     documents.append(Document(page_content=chunk))
 
         texts = [doc.page_content for doc in documents]
-
-        print("\nTextos:\n")
-        print(texts)
-
+        
         doc_embeddings = get_embeddings_with_retry(texts, embeddings)
  
         # Criar índice no Redis
