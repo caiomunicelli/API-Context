@@ -6,12 +6,18 @@ import time
 import azure.functions as func
 import redis
 import numpy as np
+import nltk
 from azure.storage.blob import BlobServiceClient
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain_openai import OpenAIEmbeddings
 from redis.commands.search.field import VectorField, TextField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+from nltk.tokenize.texttiling import TextTilingTokenizer
+ 
+# Na primeira execução, baixa os corpora necessários
+nltk.download("punkt")
+nltk.download("stopwords")
  
 # Configurar logging settings
 logging.basicConfig(level=logging.INFO)
@@ -41,12 +47,23 @@ def extract_text_from_docx(file_path):
     doc = docx.Document(file_path)
     text = ""
     for para in doc.paragraphs:
-        text += para.text + "\n"
+        text += para.text + "\n\n"
     return text
  
 def extract_text_from_txt(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         return file.read()
+    
+# Função para dividir o texto em segmentos temáticos via NLTK TextTiling
+def texttiling_split(content: str, w: int = 5, k: int = 2) -> list[str]:
+     # w: número mínimo de sentenças por bloco (window size)
+     # k: número de janelas usadas para comparar mudanças (smoothing width)
+    tokenizer = TextTilingTokenizer(w=w, k=k, stopwords=nltk.corpus.stopwords.words("portuguese")) 
+
+    try: 
+        return tokenizer.tokenize(content) 
+    except ValueError as exc:
+        return [content]
  
 # Função para gerar embeddings com tentativas de repetição em caso de falha
 def get_embeddings_with_retry(texts, embeddings, max_retries=5, delay=2):
@@ -144,11 +161,30 @@ async def main(req: func.HttpRequest) -> func.HttpResponse:
             content = extract_text_from_txt(file_path)
         else:
             return func.HttpResponse(f"Unsupported file type: {file_extension}", status_code=400)
- 
-        # Divisão do conteúdo em chunks e geração de embeddings
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        documents = [Document(page_content=chunk) for chunk in text_splitter.split_text(content)]
+
+        print("Conteudo do Arquivo:\n")
+        print(content)
+
+        # 1) faz a segmentação semântica com TextTiling
+        segments = texttiling_split(content)
+
+        # 2) opcional: se algum segmento ficar muito grande,
+        #    refine com o splitter de sentenças/pontuação
+        splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, separators=["\n\n", "\n", ".", "?", "!"])
+
+        documents = []
+        for seg in segments:
+            if len(seg) <= chunk_size:
+                documents.append(Document(page_content=seg))
+            else:
+                for chunk in splitter.split_text(seg):
+                    documents.append(Document(page_content=chunk))
+
         texts = [doc.page_content for doc in documents]
+
+        print("\nTextos:\n")
+        print(texts)
+
         doc_embeddings = get_embeddings_with_retry(texts, embeddings)
  
         # Criar índice no Redis
@@ -170,7 +206,7 @@ async def main(req: func.HttpRequest) -> func.HttpResponse:
         # Fechar o diretório temporário
         temp_dir.cleanup()
  
-        logging.info("File processed, indexed, and uploaded successfully.")
+        logging.info("File processed, indexed, and uploaded successfully.") 
         return func.HttpResponse(f"{file_name}", status_code=200)
  
     except Exception as e:

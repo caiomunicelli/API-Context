@@ -10,3 +10,4 @@ langchain
 langchain-openai
 PyMuPDF
 python-docx
+nltk==3.8.1
