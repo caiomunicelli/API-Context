@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "azure-functions": "^1.0.2",
+    "azure-storage-blob": "^0.0.1-security",
+    "langchain": "^0.3.31",
+    "numpy": "^0.0.1",
+    "redis": "^5.8.1"
+  }
+}

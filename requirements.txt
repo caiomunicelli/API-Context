@@ -3,10 +3,12 @@
 # Manually managing azure-functions-worker may cause unexpected issues
 
 azure-functions
-redis
+redis==4.6.0
+redisearch
 numpy
 azure-storage-blob
 langchain
-langchain-openai
 PyMuPDF
 python-docx
+langchain
+langchain-openai
