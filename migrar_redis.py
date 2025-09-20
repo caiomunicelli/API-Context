@@ -1,78 +1,79 @@
-
-import redis
-from redis.commands.search.field import VectorField, TextField
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 import numpy as np
 import time
+import matplotlib.pyplot as plt
+import faiss
 
-# Configurações
-ORIGEM = {
-    "host": "redis-11232.c251.east-us-mz.azure.redns.redis-cloud.com",
-    "port": 11232,
-    "password": "SqmeXnAz5MUR3wAqzdb2YFs8rfz5ih1a",
-    "db": 0
-}
-DESTINO = {
-    "host": "redis-17429.c262.us-east-1-3.ec2.redns.redis-cloud.com",
-    "port": 17429,
-    "password": "5hKERvlGvMpvycRoZWjRPCDVOrpT5ysT",
-    "db": 0
-}
+# Configurações gerais
+dim = 1536                        # dimensão da embedding
+nb_values = [1000, 10000, 100000] # diferentes tamanhos da base
+nq = 100                          # nº de queries
+k = 3                             # top-k para recall
 
-INDEX_NAME = "document_index"
-EMBEDDING_DIM = 1536  # ajuste conforme seu caso
+# Intervalos de parâmetros HNSW
+M_values = [16, 32]
+efConstruction_values = [200, 400]
+efSearch_values = [64, 200]
 
+results = []
 
-def print_all_indexes(redis_client, nome):
-    try:
-        # FT._LIST retorna todos os índices
-        indexes = redis_client.execute_command('FT._LIST')
-        if not indexes:
-            print(f"[{nome}] Nenhum índice encontrado.")
-        for idx in indexes:
-            idx_name = idx.decode() if isinstance(idx, bytes) else str(idx)
-            try:
-                info = redis_client.ft(idx_name).info()
-                algorithm = info.get('algorithm', 'N/A')
-                print(f"[{nome}] Índice: {idx_name} | Tipo de indexação: {algorithm}")
-            except Exception as e:
-                print(f"[{nome}] Índice: {idx_name} | Não foi possível obter o tipo de indexação: {e}")
-    except Exception as e:
-        print(f"[{nome}] Não foi possível listar índices: {e}")
-    count = 0
-    for _ in redis_client.scan_iter("doc:*"):
-        count += 1
-    print(f"[{nome}] Quantidade de registros: {count}")
+for nb in nb_values:
+    print(f"\n=== Base com {nb} vetores ===")
 
-from redis.commands.search.query import Query
+    # Gera base aleatória normalizada
+    xb = np.random.random((nb, dim)).astype('float32')
+    xb = xb / np.linalg.norm(xb, axis=1, keepdims=True)
 
+    # Queries
+    xq = np.random.random((nq, dim)).astype('float32')
+    xq = xq / np.linalg.norm(xq, axis=1, keepdims=True)
 
-def knn_query(redis_client, nome, query_vector, top_n=3):
-    print(f"\n[{nome}] Executando consulta KNN...")
-    try:
-        start_time = time.time()
-        base_query = (Query(f"*=>[KNN {top_n} @embedding $vec AS score]")
-                      .sort_by("score")
-                      .return_fields("content", "score")
-                      .paging(0, top_n)
-                      .dialect(2))
-        query_params = {"vec": query_vector.tobytes()}
-        res = redis_client.ft(INDEX_NAME).search(base_query, query_params)
-        elapsed = time.time() - start_time
-        print(f"[{nome}] Tempo de resposta: {elapsed:.4f} segundos. Top {top_n} resultados:")
-        for doc in res.docs:
-            print(f"  - Score: {doc.score}")
-    except Exception as e:
-        print(f"[{nome}] Erro na consulta KNN: {e}")
+    # ----- FLAT (exato) -----
+    index_flat = faiss.IndexFlatIP(dim)
+    index_flat.add(xb)
 
-if __name__ == "__main__":
-    r1 = redis.Redis(**ORIGEM)
-    r2 = redis.Redis(**DESTINO)
+    start = time.time()
+    D_flat, I_flat = index_flat.search(xq, k)
+    flat_time = (time.time() - start) / nq
 
-    print_all_indexes(r1, "ORIGEM")
-    print_all_indexes(r2, "DESTINO")
+    # ----- Testes com HNSW -----
+    for m in M_values:
+        for efC in efConstruction_values:
+            for efS in efSearch_values:
+                
+                index_hnsw = faiss.IndexHNSWFlat(dim, m)
+                index_hnsw.hnsw.efConstruction = efC
+                index_hnsw.hnsw.efSearch = efS
+                index_hnsw.add(xb)
 
-    # Gerar um único vetor de consulta e usar nos dois bancos
-    query_vector = np.random.rand(EMBEDDING_DIM).astype(np.float32)
-    knn_query(r1, "ORIGEM", query_vector)
-    knn_query(r2, "DESTINO", query_vector)
+                start = time.time()
+                D_hnsw, I_hnsw = index_hnsw.search(xq, k)
+                hnsw_time = (time.time() - start) / nq
+
+                # Recall@k
+                recall = np.mean([
+                    len(set(I_flat[i]) & set(I_hnsw[i])) / k
+                    for i in range(nq)
+                ])
+
+                print(f"M={m}, efC={efC}, efS={efS} | FLAT: {flat_time:.6f}s | HNSW: {hnsw_time:.6f}s | Recall={recall:.3f}")
+                results.append((nb, m, efC, efS, flat_time, hnsw_time, recall))
+
+# ----- Resultados consolidados -----
+import pandas as pd
+results_df = pd.DataFrame(results, columns=["Base", "M", "efConstruction", "efSearch", "Tempo_FLAT", "Tempo_HNSW", "Recall"])
+
+print("\n=== RESULTADOS FINAIS ===")
+print(results_df)
+
+# Exibir gráficos médios por base
+plt.figure(figsize=(12,5))
+
+for nb in nb_values:
+    subset = results_df[results_df["Base"] == nb]
+    plt.plot(subset["Recall"], subset["Tempo_HNSW"], 'o-', label=f"Base {nb} vetores")
+
+plt.xlabel("Recall@3")
+plt.ylabel("Tempo médio por consulta (s)")
+plt.title("Trade-off Recall vs Tempo (HNSW)")
+plt.legend()
+plt.show()
